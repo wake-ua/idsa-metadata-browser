@@ -21,7 +21,10 @@ class PersistenceConfiguration:
 class Persistence:
     def __init__(self, config: PersistenceConfiguration):
         self.config = config
-        self.client = MongoClient(self.config.db_uri, server_api=ServerApi('1'), tlsCAFile=certifi.where())
+        if self.config.db_uri.find("localhost"):
+            self.client = MongoClient(self.config.db_uri)
+        else:
+            self.client = MongoClient(self.config.db_uri, server_api=ServerApi('1'), tlsCAFile=certifi.where())
         self.db = self.client[self.config.db_name]
         self.test_connection()
 
@@ -32,7 +35,7 @@ class Persistence:
 
     def test_connection(self, test_collection: str = 'test') -> bool:
         try:
-            self.client.admin.command('ping')
+            # self.client.admin.command('ping')
             self.db[test_collection].replace_one({'success': True}, {'success': True}, upsert=True)
             doc = self.db[test_collection].find_one()
             print("* Connection to database '{}' => OK {}".format(self.db.name, doc))

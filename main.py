@@ -100,7 +100,7 @@ def get_provider_description(broker_doc: dict, connector_url: str, auth: tuple) 
             provider["_catalogs"] = []
             for element in resource_catalogs:
                 if element.get("@type") and element.get("@type") == "ids:ResourceCatalog" and element.get("@id"):
-                    provider["_catalogs"] = [{"@id": str(element.get("@id")), "@type": "ids:ResourceCatalog"}]
+                    provider["_catalogs"] += [{"@id": str(element.get("@id")), "@type": "ids:ResourceCatalog"}]
             providers += [provider]
 
     return providers
