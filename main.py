@@ -106,6 +106,55 @@ def get_provider_description(broker_doc: dict, connector_url: str, auth: tuple) 
     return providers
 
 
+def get_sample_data(provider_url, sample_resource, connector_url, auth) -> dict:
+    artifact_id = sample_resource['ids:representation'][0]['ids:instance'][0]['@id']
+    resource_id = sample_resource['@id']
+    rule_id = sample_resource['ids:contractOffer'][0]["ids:permission"][0]["@id"]
+
+    body = [{
+        "@type": "ids:Permission",
+        "@id": rule_id,
+        "ids:description": [{
+            "@value": "Usage policy provide access applied",
+            "@type": "http://www.w3.org/2001/XMLSchema#string"
+        }],
+        "ids:title": [{
+            "@value": "Example Usage Policy",
+            "@type": "http://www.w3.org/2001/XMLSchema#string"
+        }],
+        "ids:action": [{
+            "@id": "https://w3id.org/idsa/code/USE"
+        }],
+        "ids:target": artifact_id
+    }]
+
+    request_url = "{0}/api/ids/contract".format(connector_url)
+    params = {"recipient": provider_url, "resourceIds": resource_id, "artifactIds": artifact_id, "download": "false"}
+    response = requests.post(request_url, json=body, params=params, auth=auth, verify=False)
+    print(" \t\t\t\t - Request POST negotiation SAMPLE {0} {1} \t => {2}".format(sample_resource["resource_name"],
+                                                                                 request_url, response.status_code))
+    response.raise_for_status()
+    agreement = json.loads(response.content)
+
+    # request artifact data link from agreement id
+    request_url = agreement["_links"]["artifacts"]["href"].split('{')[0]
+    response = requests.get(request_url, auth=auth, verify=False)
+    print(" \t\t\t\t - Request GET data link SAMPLE {0} {1} \t => {2}".format(sample_resource["resource_name"],
+                                                                              request_url, response.status_code))
+    response.raise_for_status()
+    content = json.loads(response.content)
+
+    # get the data
+    request_url = content["_embedded"]["artifacts"][0]["_links"]["data"]["href"]
+    response = requests.get(request_url, auth=auth, verify=False)
+    print(" \t\t\t\t - Request GET data for SAMPLE {0} {1} \t => {2}".format(sample_resource["resource_name"],
+                                                                             request_url, response.status_code))
+    response.raise_for_status()
+    data_content = json.loads(response.content)
+
+    return data_content
+
+
 def get_provider_catalog_description(provider_docs: list, connector_url: str, auth: tuple) -> (list, list):
     catalogs = []
     resources = []
@@ -125,15 +174,36 @@ def get_provider_catalog_description(provider_docs: list, connector_url: str, au
             for k in ["_broker_id", "_broker_catalog_id", "_broker_connector_id", "_provider_url"]:
                 catalog[k] = provider[k]
 
+            # this call does not return the samples attribute for the resources
             catalog_resources = catalog["ids:offeredResource"]
             catalog["ids:offeredResource"] = [str(r['@id']) for r in catalog_resources]
             catalogs += [catalog]
 
+            samples = []
             for resource in catalog_resources:
                 for k in ["_broker_id", "_broker_catalog_id", "_broker_connector_id", "_provider_url", "_provider_id"]:
                     resource[k] = catalog[k]
                 resource["_catalog_id"] = str(catalog['@id'])
+                sample = resource.get("ids:sample", {}).get('@id')
+                if sample:
+                    print("\t * SAMPLE found", sample)
+                    # retrieve sample data and add to resource
+                    sample_resources = [s for s in catalog_resources
+                                        if s['@id'].split('/')[-1] == sample.split('/')[-1]]
+                    if len(sample_resources) > 0:
+                        sample_resource = sample_resources[0]
+                        samples += [sample_resource['@id']]
+                        resource['_sample_value'] = get_sample_data(provider_url, sample_resource, connector_url, auth)
+
                 resources += [resource]
+
+            # mark sample resource as sample
+            for resource in catalog_resources:
+                if resource['@id'] in samples:
+                    resource['_is_sample'] = True
+
+    # remove samples
+    resources = [r for r in resources if not r.get('_is_sample', False)]
     return catalogs, resources
 
 
@@ -181,7 +251,7 @@ def main(metadata_broker_urls: str = METADATA_BROKER_URLS, metadata_broker_docke
         print("\n 2. Request broker connectors info...")
         broker_catalogs = broker_doc["_broker_catalogs"]
         broker_doc["_broker_catalogs"] = get_broker_connectors(metadata_broker_docker_url, broker_catalogs,
-                                                connector_url, connector_auth)
+                                                               connector_url, connector_auth)
 
         print("\t - Got {} catalog(s) with connector(s) ({}...)".format(len(broker_doc["_broker_catalogs"]),
                                                                         str(broker_doc["_broker_catalogs"])[:200]))
