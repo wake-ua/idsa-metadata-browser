@@ -155,56 +155,79 @@ def get_sample_data(provider_url, sample_resource, connector_url, auth) -> dict:
     return data_content
 
 
-def get_provider_catalog_description(provider_docs: list, connector_url: str, auth: tuple) -> (list, list):
+def get_provider_catalogs_description(provider: dict, connector_url: str, auth: tuple) -> list:
     catalogs = []
+
+    provider_url = provider["_provider_url"]
+    for provider_catalog in provider["_catalogs"]:
+        provider_catalog_id = provider_catalog['@id']
+        request_url = "{0}/api/ids/description?recipient={1}&elementId={2}".format(connector_url, provider_url,
+                                                                                   provider_catalog_id)
+        response = requests.post(request_url, data={}, auth=auth, verify=False)
+        print(" \t * Request POST {0} \t => {1}".format(request_url, response.status_code))
+        content = response.content
+        catalog = json.loads(content)
+
+        catalog["_provider_id"] = provider['@id']
+        for k in ["_broker_id", "_broker_catalog_id", "_broker_connector_id", "_provider_url"]:
+            catalog[k] = provider[k]
+
+        # this call does not return the samples attribute for the resources
+        catalog_resources = catalog["ids:offeredResource"]
+        catalog["ids:offeredResource"] = [str(r['@id']) for r in catalog_resources]
+        catalogs += [catalog]
+
+    return catalogs
+
+
+def get_provider_catalog_resources(provider: dict, catalog: dict, connector_url: str, auth: tuple) -> list:
     resources = []
 
-    for provider in provider_docs:
-        provider_url = provider["_provider_url"]
-        for provider_catalog in provider["_catalogs"]:
-            provider_catalog_id = provider_catalog['@id']
-            request_url = "{0}/api/ids/description?recipient={1}&elementId={2}".format(connector_url, provider_url,
-                                                                                       provider_catalog_id)
-            response = requests.post(request_url, data={}, auth=auth, verify=False)
-            print(" \t * Request POST {0} \t => {1}".format(request_url, response.status_code))
-            content = response.content
-            catalog = json.loads(content)
+    provider_url = provider["_provider_url"]
+    # this call does not return the samples attribute for the resources
+    catalog_resource_ids = catalog["ids:offeredResource"]
 
-            catalog["_provider_id"] = provider['@id']
-            for k in ["_broker_id", "_broker_catalog_id", "_broker_connector_id", "_provider_url"]:
-                catalog[k] = provider[k]
+    samples = []
+    for resource_id in catalog_resource_ids:
 
-            # this call does not return the samples attribute for the resources
-            catalog_resources = catalog["ids:offeredResource"]
-            catalog["ids:offeredResource"] = [str(r['@id']) for r in catalog_resources]
-            catalogs += [catalog]
+        request_url = "{0}/api/ids/description?recipient={1}&elementId={2}".format(connector_url, provider_url,
+                                                                                   resource_id)
+        response = requests.post(request_url, data={}, auth=auth, verify=False)
+        print(" \t * Request POST {0} \t => {1}".format(request_url, response.status_code))
+        content = response.content
+        resource = json.loads(content)
 
-            samples = []
-            for resource in catalog_resources:
-                for k in ["_broker_id", "_broker_catalog_id", "_broker_connector_id", "_provider_url", "_provider_id"]:
-                    resource[k] = catalog[k]
-                resource["_catalog_id"] = str(catalog['@id'])
-                sample = resource.get("ids:sample", {}).get('@id')
-                if sample:
-                    print("\t * SAMPLE found", sample)
-                    # retrieve sample data and add to resource
-                    sample_resources = [s for s in catalog_resources
-                                        if s['@id'].split('/')[-1] == sample.split('/')[-1]]
-                    if len(sample_resources) > 0:
-                        sample_resource = sample_resources[0]
-                        samples += [sample_resource['@id']]
-                        resource['_sample_value'] = get_sample_data(provider_url, sample_resource, connector_url, auth)
+        for k in ["_broker_id", "_broker_catalog_id", "_broker_connector_id", "_provider_url", "_provider_id"]:
+            resource[k] = catalog[k]
+        resource["_catalog_id"] = str(catalog['@id'])
+        sample = resource.get("ids:sample", {}).get('@id')
+        if sample:
+            print("\t * SAMPLE found", sample)
+            # retrieve sample data and add to resource
+            sample_resource_ids = [s for s in catalog_resource_ids
+                                   if s.split('/')[-1] == sample.split('/')[-1]]
+            if len(sample_resource_ids) > 0:
+                sample_resource_id = sample_resource_ids[0]
+                samples += [sample_resource_id]
+                request_url = "{0}/api/ids/description?recipient={1}&elementId={2}".format(connector_url, provider_url,
+                                                                                           sample_resource_id)
+                response = requests.post(request_url, data={}, auth=auth, verify=False)
+                print(" \t * Request POST {0} \t => {1}".format(request_url, response.status_code))
+                content = response.content
+                sample_resource = json.loads(content)
 
-                resources += [resource]
+                resource['_sample_value'] = get_sample_data(provider_url, sample_resource, connector_url, auth)
 
-            # mark sample resource as sample
-            for resource in catalog_resources:
-                if resource['@id'] in samples:
-                    resource['_is_sample'] = True
+        resources += [resource]
+
+    # mark sample resource as sample
+    for resource in resources:
+        if resource['@id'] in samples:
+            resource['_is_sample'] = True
 
     # remove samples
     resources = [r for r in resources if not r.get('_is_sample', False)]
-    return catalogs, resources
+    return resources
 
 
 def init_persistence(db_uri: str = DB_URI, db_name: str = DB_NAME,
@@ -263,13 +286,17 @@ def main(metadata_broker_urls: str = METADATA_BROKER_URLS, metadata_broker_docke
                                                                       str(provider_docs)[:200]))
         provider_docs = persistence.save_providers(provider_docs)
 
-        print("\n 4. Request each provider catalog description...")
-        catalog_docs, resource_docs = get_provider_catalog_description(provider_docs, connector_url, connector_auth)
-        catalog_docs = persistence.save_catalogs(catalog_docs)
-        resource_docs = persistence.save_resources(resource_docs)
-        print("\t - Got {} provider catalog(s) description(s) ({}...)".format(len(catalog_docs),
-                                                                              str(catalog_docs)[:500]))
-        print("\t - Got {} provider resource(s) ({}...)".format(len(resource_docs), str(resource_docs)[:500]))
+        for provider_doc in provider_docs:
+
+            print("\n 4. Request each provider catalog description...")
+            catalog_docs = get_provider_catalogs_description(provider_doc, connector_url, connector_auth)
+            catalog_docs = persistence.save_catalogs(catalog_docs)
+            print("\t - Got {} provider catalog(s) description(s) ({}...)".format(len(catalog_docs),
+                                                                                  str(catalog_docs)[:500]))
+            for catalog_doc in catalog_docs:
+                resource_docs = get_provider_catalog_resources(provider_doc, catalog_doc, connector_url, connector_auth)
+                resource_docs = persistence.save_resources(resource_docs)
+                print("\t - Got {} provider resource(s) ({}...)".format(len(resource_docs), str(resource_docs)[:500]))
 
         print("\t... DONE.")
 
