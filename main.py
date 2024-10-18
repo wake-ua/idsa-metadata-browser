@@ -288,7 +288,7 @@ def main(metadata_broker_urls: str = METADATA_BROKER_URLS, metadata_broker_docke
 
         for provider_doc in provider_docs:
 
-            print("\n 4. Request each provider catalog description...")
+            print("\n 4. Request provider catalog description...")
             catalog_docs = get_provider_catalogs_description(provider_doc, connector_url, connector_auth)
             catalog_docs = persistence.save_catalogs(catalog_docs)
             print("\t - Got {} provider catalog(s) description(s) ({}...)".format(len(catalog_docs),
